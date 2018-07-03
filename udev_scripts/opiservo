@@ -1,0 +1,10 @@
+#!/bin/bash
+
+if [ "$ACTION" = "remove" ]; then
+        rm -f /dev/opiservo
+elif [ "$ACTION" = "add" ]; then
+         major=$( sed -n 's/ opiservo//p' /proc/devices )
+       [ "$major" ] && mknod -m 0666 /dev/opiservo c $major 0
+fi
+
+exit 0

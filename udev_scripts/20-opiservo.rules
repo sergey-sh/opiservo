@@ -1,0 +1,1 @@
+SUBSYSTEM=="module", DEVPATH=="/module/opiservo", RUN+="/lib/udev/opiservo"
