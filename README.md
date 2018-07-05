@@ -33,3 +33,11 @@ foreach(array(2,0,3,7,21,22,23,24,6,9,8,15,16,31,30,25,11) as $pin) {
 fwrite($h, $cmd);
 fclose($h);
 ?>
+
+```
+Screenshots from my Logic Analyzator:
+![first pins from array from 100-800us](https://raw.githubusercontent.com/sergey-sh/opiservo/master/screenshot/opiservo_8pins.png)
+
+Scaled:
+![scaled 100us](https://raw.githubusercontent.com/sergey-sh/opiservo/master/screenshot/opiservo_8pins_detail.png)
+
