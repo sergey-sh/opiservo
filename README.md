@@ -13,6 +13,7 @@ I tested the use of only one register PA, which are GPIO 2, 0, 3, 7, 21, 22, 23,
 
 Example for use from php: 
 
+```php
 <?php
 $h = fopen('/dev/opiservo','w');
 $w = 100;
