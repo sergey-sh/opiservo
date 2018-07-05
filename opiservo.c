@@ -50,6 +50,36 @@
 #include <asm/uaccess.h>
 #include <linux/interrupt.h>
 
+#define DEBUGSERVO
+#ifdef DEBUGSERVO
+/* --- PRINTF_BYTE_TO_BINARY macro's --- */
+#define PRINTF_BINARY_PATTERN_INT8 "%c%c%c%c%c%c%c%c"
+#define PRINTF_BYTE_TO_BINARY_INT8(i)    \
+    (((i) & 0x80ll) ? '1' : '0'), \
+    (((i) & 0x40ll) ? '1' : '0'), \
+    (((i) & 0x20ll) ? '1' : '0'), \
+    (((i) & 0x10ll) ? '1' : '0'), \
+    (((i) & 0x08ll) ? '1' : '0'), \
+    (((i) & 0x04ll) ? '1' : '0'), \
+    (((i) & 0x02ll) ? '1' : '0'), \
+    (((i) & 0x01ll) ? '1' : '0')
+
+#define PRINTF_BINARY_PATTERN_INT16 \
+    PRINTF_BINARY_PATTERN_INT8              PRINTF_BINARY_PATTERN_INT8
+#define PRINTF_BYTE_TO_BINARY_INT16(i) \
+    PRINTF_BYTE_TO_BINARY_INT8((i) >> 8),   PRINTF_BYTE_TO_BINARY_INT8(i)
+#define PRINTF_BINARY_PATTERN_INT32 \
+    PRINTF_BINARY_PATTERN_INT16             PRINTF_BINARY_PATTERN_INT16
+#define PRINTF_BYTE_TO_BINARY_INT32(i) \
+    PRINTF_BYTE_TO_BINARY_INT16((i) >> 16), PRINTF_BYTE_TO_BINARY_INT16(i)
+#define PRINTF_BINARY_PATTERN_INT64    \
+    PRINTF_BINARY_PATTERN_INT32             PRINTF_BINARY_PATTERN_INT32
+#define PRINTF_BYTE_TO_BINARY_INT64(i) \
+    PRINTF_BYTE_TO_BINARY_INT32((i) >> 32), PRINTF_BYTE_TO_BINARY_INT32(i)
+/* --- end macros --- */
+
+#endif
+
 #define NUM_PINS 64
 #define RESERVED_MEM_PIN 10
 #define NUM_GPIO_REGISTER 9
@@ -282,8 +312,8 @@ static int pinGpio_Set [NUM_PINS] = {
 };
 
 // must division 100000 for usec
-static int senddma_uarttime1byte = 156457;
-// static int senddma_uarttime1byte = 142234;
+//static int senddma_uarttime1byte = 156457;
+static int senddma_uarttime1byte = 142234;
 //static int senddma_uarttime1byte = 200000;
 //static const int senddma_gpiotime4byte = 5796;
 
@@ -325,6 +355,54 @@ static inline struct sunxi_desc *to_sunxi_desc(struct dma_async_tx_descriptor *t
 	return container_of(tx, struct sunxi_desc, vd.tx);
 }
 
+#ifdef DEBUGSERVO
+static void dump_sunxi_sg_list(struct dma_async_tx_descriptor *tx,int maxitem) {
+	struct sunxi_desc *txd = 0;
+	struct sunxi_dma_lli *lli;
+	int i;
+	
+	txd = to_sunxi_desc(tx);
+	i=0;
+	lli = txd->lli_virt;
+	while(lli && (maxitem==0 || i<maxitem)) {
+		printk("cfg: %x src: %x dst: %x len: %x para: %x next: %x\n",
+			lli->cfg,
+			lli->src,
+			lli->dst,
+			lli->len,
+			lli->para,
+			lli->p_lln
+		);
+		lli = lli->v_lln;
+		i++;
+	}
+}
+
+static void dumpSendPlan(void) {
+	int i;
+	printk("Bank\tSleep\tValue\n");
+	for(i=0;i<count_send_plan;i++) {
+		printk("%d\t%d\t"PRINTF_BINARY_PATTERN_INT32"\n",
+			send_plan[i].bank,
+			send_plan[i].sleep,
+			PRINTF_BYTE_TO_BINARY_INT32(send_plan[i].value)
+		);
+	}
+}
+static void dumpWeightPins(void) {
+	int i;
+	printk("Pin\tValue\n");
+	for(i=0;i<c_pins;i++) {
+		printk("%d\t%d\n",
+			pins[i],
+			pinGpio_Set[pins[i]]
+		);
+	}
+}
+
+
+#endif
+
 static inline struct sunxi_chan *to_sunxi_chan(struct dma_chan *chan)
 {
 	return container_of(chan, struct sunxi_chan, vc.chan);
@@ -335,11 +413,11 @@ static uint32_t readlI(uint32_t addr) {
 }
 
 static void writelI(uint32_t val, uint32_t addr) {
+	#ifdef DEBUGSERVO
+	void *x = (gpio + (addr >> 2));
+	printk("Addr: %x Val: %x Bin: "PRINTF_BINARY_PATTERN_INT32"\n",(u32)x,val,PRINTF_BYTE_TO_BINARY_INT32(val));
+	#endif
 	*(gpio + (addr >> 2)) = val;
-}
-
-static void tracelog(char* out) {
-	printk(out);
 }
 
 static char* charn2str(char *data,int len,char *buf,int buf_len) {
@@ -385,7 +463,7 @@ static void sunxi_set_gpio_mode(int pin,int mode) {
 		regval |=  ((mode & 7) << offset);
 		writelI(regval, phyaddr);
 	} else {
-		tracelog("pin number error\n");
+		printk("pin number error\n");
 	}
 }
 
@@ -420,7 +498,7 @@ static void sunxi_digitalWrite(int pin, int value) {
 			writelI(regval, phyaddr);
 		}
 	} else {
-		tracelog("pin number error\n");
+		printk("pin number error\n");
 	}
 }
 
@@ -446,7 +524,7 @@ static int sunxi_digitalRead(int pin) {
 		regval &= 1;
 		return regval;
 	} else {
-		tracelog("Sunxi_digitalRead() pin - number error\n");
+		printk("Sunxi_digitalRead() pin - number error\n");
 		return regval;
 	}
 }
@@ -655,30 +733,6 @@ static struct dma_async_tx_descriptor * performDMAsg(void) {
 	return tx;
 }
 
-/*
-static void dump_sunxi_sg_list(struct dma_async_tx_descriptor *tx,int maxitem) {
-	struct sunxi_desc *txd = 0;
-	struct sunxi_dma_lli *lli;
-	int i;
-	
-	txd = to_sunxi_desc(tx);
-	i=0;
-	lli = txd->lli_virt;
-	while(lli && (maxitem==0 || i<maxitem)) {
-		printk("cfg: %x src: %x dst: %x len: %x para: %x next: %x\n",
-			lli->cfg,
-			lli->src,
-			lli->dst,
-			lli->len,
-			lli->para,
-			lli->p_lln
-		);
-		lli = lli->v_lln;
-		i++;
-	}
-}
-*/
-
 static bool hackDMAsg(struct dma_async_tx_descriptor *tx) {
 	struct sunxi_desc *txd = 0;
 	struct sunxi_dma_lli *lli;
@@ -749,6 +803,9 @@ static void startSendDMA(void) {
 				if(tx) {
 					if(hackDMAsg(tx)) {
 						if(/*true */ hackCyclicDMAsg(tx,true)) {
+							#ifdef DEBUGSERVO
+							dump_sunxi_sg_list(tx,0);
+							#endif
 							tx->callback = NULL;
 							cookie = dmaengine_submit(tx);
 							
@@ -890,6 +947,11 @@ static void performSendPlan(void) {
 			send_plan[count_send_plan-1].sleep=senddma_sequence_periode;
 		}
 	}
+
+	#ifdef DEBUGSERVO
+	dumpWeightPins();
+	dumpSendPlan();
+	#endif
 }
 
 // only change one pin servo value, resort priority
@@ -1019,6 +1081,9 @@ static void update_command(char *data,int len) {
 	char val[MAX_BUF_VALUE];
 	if(charn2str(data,len,buf,sizeof(buf)) && sscanf(buf, "%d=%s", &pin, val) == 2) {
 		if(pin>=0 && pin<NUM_PINS) {
+			#ifdef DEBUGSERVO
+			printk("%d=%s\n",pin,val);
+			#endif
 			do_pin_command(pin,val);
 		} else {
 			printk("Bad num pins: %d\n",pin);
