@@ -253,6 +253,11 @@ static int pinToGpio_BP [NUM_PINS] =
 #define	OUTPUT_MODE			 1
 #define	SERVO_MODE			 2
 
+#define	PUD_OFF			 0
+// sunxi_pud (not compatible wiring PI 0,1,2)
+#define	PUD_DOWN		 2
+#define	PUD_UP			 1
+
 #define	LOW			 0
 #define	HIGH			 1
 #define BUS_CLK_GATING_REG3 (0x006C>>2)
@@ -414,8 +419,8 @@ static uint32_t readlI(uint32_t addr) {
 
 static void writelI(uint32_t val, uint32_t addr) {
 	#ifdef DEBUGSERVO
-	void *x = (gpio + (addr >> 2));
-	printk("Addr: %x Val: %x Bin: "PRINTF_BINARY_PATTERN_INT32"\n",(u32)x,val,PRINTF_BYTE_TO_BINARY_INT32(val));
+	void *x = (void *)(gpio + (addr >> 2));
+	printk("Addr: %x Val: %x Bin: "PRINTF_BINARY_PATTERN_INT32" Dec: %d\n",(u32)x,val,PRINTF_BYTE_TO_BINARY_INT32(val),val);
 	#endif
 	*(gpio + (addr >> 2)) = val;
 }
@@ -451,6 +456,38 @@ static int get_bitoffset_reg(int pin) {
 	return -1;
 }
 
+static void sunxi_pullUpDnControl (int pin, int pud)
+{
+	uint32_t regval = 0;
+	int bank = pin >> 5;
+	int index = pin - (bank << 5);
+	int sub = index >> 4;
+	int sub_index = index - 16*sub;
+	uint32_t phyaddr = SUNXI_GPIO_OFFSET + (bank * 36) + 0x1c + sub*4; // +0x10 -> pullUpDn reg
+#ifdef DEBUGSERVO
+	printk("func:%s pin:%d,bank:%d index:%d sub:%d phyaddr:0x%x\n",__func__, pin,bank,index,sub,phyaddr); 
+#endif
+	if(BP_PIN_MASK[bank][index] != -1) {  //PI13~PI21 need check again
+		regval = readlI(phyaddr);
+#ifdef DEBUGSERVO
+		printk("pullUpDn reg:0x%x, pud:0x%x sub_index:%d\n", regval, pud, sub_index);
+#endif
+		regval &= ~(3 << (sub_index << 1));
+		regval |= (pud << (sub_index << 1));
+#ifdef DEBUGSERVO
+		printk("pullUpDn val ready to set:0x%x\n", regval);
+#endif
+		writelI(regval, phyaddr);
+		regval = readlI(phyaddr);
+#ifdef DEBUGSERVO
+		printk("pullUpDn reg after set:0x%x  addr:0x%x\n", regval, phyaddr);
+#endif
+	 } else {
+		printk("pin number error\n");
+	 } 
+	return ;
+}
+
 static void sunxi_set_gpio_mode(int pin,int mode) {
 	uint32_t regval = 0;
 	int bank = pin >> 5;
@@ -479,6 +516,16 @@ static void pinMode (int pin, int mode) {
 			} else {
 				sunxi_set_gpio_mode(pin,INPUT_MODE);
 			}
+		}
+	}
+}
+
+static void pullUpDnControl(int pin, int mode) {
+	if ((pin>=0 && pin<MAX_PIN_NUM)) {
+		pin = pinToGpio_BP [pin] ;
+		/*VCC or GND return directly*/
+		if (-1 != pin) {
+			sunxi_pullUpDnControl(pin, mode);
 		}
 	}
 }
@@ -1024,6 +1071,12 @@ static void do_pin_command(int pin,char *val) {
 	if(strcmp(val,"INPUT")==0) {
 		pinGpio_Mode[pin]=INPUT_MODE;
 		pinMode(pin,INPUT_MODE);
+	} else if(strcmp(val,"BUTTON")==0) {
+		// -- must fix if change mode to INPUT|OUTPUT|SERVO after BUTTON
+		// need pullUpDnControl for disable PUD_UP mode
+		pinGpio_Mode[pin] = INPUT_MODE;
+		pinMode(pin, INPUT_MODE);
+		pullUpDnControl(pin, PUD_UP);
 	} else if(strcmp(val,"OUTPUT")==0) {
 		pinGpio_Mode[pin]=OUTPUT_MODE;
 		pinGpio_Set[pin] = 0;

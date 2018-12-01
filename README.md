@@ -42,3 +42,56 @@ Screenshots from my Logic Analyzator:
 Scaled:
 ![scaled 100us](https://raw.githubusercontent.com/sergey-sh/opiservo/master/screenshot/opiservo_8pins_detail.png)
 
+01 Dec 2018
+Added the ability to use GPIO to connect buttons.
+
+Example for use from php: 
+
+```php
+<?php
+$pins = array(4);
+$h = fopen('/dev/opiservo','w');
+$cmd = "";
+// init GPIO use at button
+foreach($pins as $pin) {
+        $cmd.= "$pin=BUTTON\n";
+}
+fwrite($h, $cmd);
+fclose($h);
+
+while(true) {
+	$data = get_pin_state();
+	foreach($pins as $pin) {
+		if(isset($data[$pin]) && $data[$pin]=="T") {
+			echo "$pin:Off\n";
+		} else {
+			echo "$pin:On\n";
+		}
+	}
+	sleep(1);
+}
+
+function get_pin_state() {
+	$r = array();
+	foreach(explode("\n",file_get_contents('/dev/opiservo')) as $v) {
+		$d = explode("=",$v);
+		if(isset($d[0]) && isset($d[1])) {
+			$r[$d[0]] = $d[1];
+		}
+	}
+	return $r;
+}
+	
+?>
+````
+
+Connection scheme:
+![Use 1kOm resistor for connect GPIO PIN and GPIO GND](https://raw.githubusercontent.com/sergey-sh/opiservo/master/screenshot/button_scheme.jpg)
+
+Shot of the working scheme:
+![Worked scheme](https://raw.githubusercontent.com/sergey-sh/opiservo/master/screenshot/button_worked.jpg)
+
+Мideo demonstrating the operation of the button from the example:
+![Worked scheme](https://raw.githubusercontent.com/sergey-sh/opiservo/master/screenshot/button_worked.mp4)
+
+
