@@ -88,10 +88,11 @@ function get_pin_state() {
 Connection scheme:
 ![Use 1kOm resistor for connect GPIO PIN and GPIO GND](https://raw.githubusercontent.com/sergey-sh/opiservo/master/screenshot/button_scheme.jpg)
 
-Shot of the working scheme:
+Snapshot of the working scheme:
 ![Worked scheme](https://raw.githubusercontent.com/sergey-sh/opiservo/master/screenshot/button_worked.jpg)
 
-Мideo demonstrating the operation of the button from the example:
-![Worked scheme](https://raw.githubusercontent.com/sergey-sh/opiservo/master/screenshot/button_worked.mp4)
+Video demonstrating the operation of the button from the example:
+[![Worked scheme](https://img.youtube.com/vi/YvzCpA07WAI/0.jpg)](http://www.youtube.com/watch?v=YvzCpA07WAI)
+
 
 
