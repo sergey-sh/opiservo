@@ -10,15 +10,23 @@ fwrite($h, $cmd);
 fclose($h);
 
 while(true) {
-	$data = get_pin_state();
-	foreach($pins as $pin) {
-		if(isset($data[$pin]) && $data[$pin]=="T") {
-			echo "$pin:Off\n";
-		} else {
-			echo "$pin:On\n";
-		}
+	foreach(get_button_state($pins) as $pin=>$state) {
+		echo "$pin:$state\n";
 	}
 	sleep(1);
+}
+
+function get_button_state($pin) {
+	$data = get_pin_state();
+	if(is_array($pin)) {
+		$r = array();
+		foreach($pin as $v) {
+			$r[$v] = (isset($data[$v]) && $data[$v]=="T")?0:1;
+		}
+		return $r;
+	} else {
+		return (isset($data[$pin]) && $data[$pin]=="T")?0:1;
+	}
 }
 
 function get_pin_state() {

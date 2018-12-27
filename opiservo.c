@@ -677,6 +677,7 @@ static bool is_use_servo_port(int pin) {
 	}
 	return false;
 }
+/* not use
 
 static bool dma_sync_wait_residue_timeout(struct dma_chan *chan,dma_cookie_t cookie,int residue,int timeout) {
 	enum dma_status status;
@@ -695,13 +696,15 @@ static bool dma_sync_wait_residue_timeout(struct dma_chan *chan,dma_cookie_t coo
 	} while (status == DMA_IN_PROGRESS);
 	return true;
 }
-
+*/
 static bool hackCyclicDMAsg(struct dma_async_tx_descriptor *tx,bool cyclic);
 
 static void recycled_and_wait_stop(void) {
+	/* not wait terminate edge, fromn wait more problem over terminate
 	if(dma_sync_wait_residue_timeout(chan,cookie,first_odd_gpio_send_bytes,senddma_sequence_periode/1000)) {
 	} else {
 	}
+	*/
 	dmaengine_terminate_all(chan);
 }
 
@@ -709,11 +712,9 @@ static void recycled_and_wait_stop(void) {
 static void stopSendDMA(bool wait_submit) {
 	if(chan) {
 		printk("DMA Stop: %s\n",dma_chan_name(chan));
-		if(wait_submit) {
-			recycled_and_wait_stop();
-		} else {
-			dmaengine_terminate_all(chan);
-		}
+
+		dmaengine_terminate_all(chan);
+		
 		if(senddma_gpiobuf_phys) {
 			dma_unmap_single(chan->device->dev, senddma_gpiobuf_phys, senddma_gpiosyncbytes , DMA_TO_DEVICE);
 			senddma_gpiobuf_phys = 0;
@@ -1036,7 +1037,9 @@ static void update_servopin(int pin) {
 // if not different need_reupdate = true
 static bool reinit(void) {
 	// use different register list
-	if(check_need_reinit()) {
+//	if(check_need_reinit()) {
+		// --
+		check_need_reinit();
 		stopSendDMA(true);
 		UseServoRegister_count = get_UseServoRegister();
 		printk("Init DMA use servo register: %d\n",UseServoRegister_count);
@@ -1048,12 +1051,14 @@ static bool reinit(void) {
 			startSendDMA();
 		}
 		return true;
+/*		
 	} else {
 		printk("Reinit: only reupdate\n");
 		performGPIOBuf();
 		need_reupdate = true;
 		return false;
 	}
+*/	
 }
 
 static void reupdate_databits_servo(void) {
@@ -1071,12 +1076,12 @@ static void do_pin_command(int pin,char *val) {
 	if(strcmp(val,"INPUT")==0) {
 		pinGpio_Mode[pin]=INPUT_MODE;
 		pinMode(pin,INPUT_MODE);
-	} else if(strcmp(val,"BUTTON")==0) {
-		// -- must fix if change mode to INPUT|OUTPUT|SERVO after BUTTON
-		// need pullUpDnControl for disable PUD_UP mode
-		pinGpio_Mode[pin] = INPUT_MODE;
-		pinMode(pin, INPUT_MODE);
+	} else if(strcmp(val,"PUDUP")==0) {
 		pullUpDnControl(pin, PUD_UP);
+	} else if(strcmp(val,"PUDDOWN")==0) {
+		pullUpDnControl(pin, PUD_DOWN);
+	} else if(strcmp(val,"PUDOFF")==0) {
+		pullUpDnControl(pin, PUD_OFF);
 	} else if(strcmp(val,"OUTPUT")==0) {
 		pinGpio_Mode[pin]=OUTPUT_MODE;
 		pinGpio_Set[pin] = 0;
