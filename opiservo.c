@@ -698,7 +698,7 @@ static bool dma_sync_wait_residue_timeout(struct dma_chan *chan,dma_cookie_t coo
 }
 */
 static bool hackCyclicDMAsg(struct dma_async_tx_descriptor *tx,bool cyclic);
-
+/*
 static void recycled_and_wait_stop(void) {
 	/* not wait terminate edge, fromn wait more problem over terminate
 	if(dma_sync_wait_residue_timeout(chan,cookie,first_odd_gpio_send_bytes,senddma_sequence_periode/1000)) {
@@ -707,7 +707,7 @@ static void recycled_and_wait_stop(void) {
 	*/
 	dmaengine_terminate_all(chan);
 }
-
+*/
 // if dma starter stop send dma chanel and clear all
 static void stopSendDMA(bool wait_submit) {
 	if(chan) {
