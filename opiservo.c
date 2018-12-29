@@ -329,14 +329,16 @@ static int senddma_gpiosyncbytes;
 
 static bool need_reinit = false;
 static bool need_reupdate = false;
+static bool is_start_dma_send = false;
 
 static char *senddma_uartbuf = NULL;
 static uint32_t *senddma_gpiobuf = NULL;
-static dma_addr_t senddma_uartbuf_phys = 0;
-static dma_addr_t senddma_gpiobuf_phys = 0;
+static uint32_t index_gpiobuf = 0;
+static uint32_t size_gpiobuf = 0;
 
 static int sg_max_len = 2*(NUM_PINS+1)+3;
 static struct scatterlist sgl[2*(NUM_PINS+1)+3];
+static int sg_real_len = 0;
 
 static int pins[NUM_PINS];
 static int c_pins = 0,c_regs = 0;
@@ -355,12 +357,16 @@ static struct gpio_send_plan send_plan[2*NUM_PINS];
 
 static void init_uart_port(void);
 static void release_uart_port(void);
+static void init_dma_properties(void);
+static void release_dma_properties(void);
 
 static inline struct sunxi_desc *to_sunxi_desc(struct dma_async_tx_descriptor *tx) {
 	return container_of(tx, struct sunxi_desc, vd.tx);
 }
 
 #ifdef DEBUGSERVO
+static bool is_dumped_sunxi_sg_list = false;
+
 static void dump_sunxi_sg_list(struct dma_async_tx_descriptor *tx,int maxitem) {
 	struct sunxi_desc *txd = 0;
 	struct sunxi_dma_lli *lli;
@@ -404,7 +410,6 @@ static void dumpWeightPins(void) {
 		);
 	}
 }
-
 
 #endif
 
@@ -589,7 +594,9 @@ static int __init opiservo_kernel_init(void) {
 	int res;
 	
 	senddma_uartsyncbytes = (senddma_sequence_periode*100000)/senddma_uarttime1byte+1;
-	senddma_gpiosyncbytes = (NUM_PINS+2)*sizeof(*senddma_gpiobuf);
+	size_gpiobuf = (NUM_PINS+2);
+	index_gpiobuf = 0;
+	senddma_gpiosyncbytes = size_gpiobuf*sizeof(*senddma_gpiobuf);
 	
 	printk(KERN_INFO "Hello, opiservo dma! uartsync: %d gpiosync: %d\n",senddma_uartsyncbytes,senddma_gpiosyncbytes);
 	
@@ -628,14 +635,13 @@ static int __init opiservo_kernel_init(void) {
 		return res;
 	}
 	init_uart_port();
+	init_dma_properties();
 
 	return 0; 
 }
 
-static void stopSendDMA(bool wait_submit);
-
 static void __exit opiservo_kernel_exit(void) {
-	stopSendDMA(false);
+	release_dma_properties();
 	release_uart_port();		
 	
 	cdev_del(&my_cdev);
@@ -697,31 +703,16 @@ static bool dma_sync_wait_residue_timeout(struct dma_chan *chan,dma_cookie_t coo
 	return true;
 }
 */
-static bool hackCyclicDMAsg(struct dma_async_tx_descriptor *tx,bool cyclic);
-/*
-static void recycled_and_wait_stop(void) {
-	/* not wait terminate edge, fromn wait more problem over terminate
-	if(dma_sync_wait_residue_timeout(chan,cookie,first_odd_gpio_send_bytes,senddma_sequence_periode/1000)) {
-	} else {
-	}
-	*/
-	dmaengine_terminate_all(chan);
-}
-*/
-// if dma starter stop send dma chanel and clear all
-static void stopSendDMA(bool wait_submit) {
+
+// release all mapped memory release dma
+static void release_dma_properties() {
 	if(chan) {
 		printk("DMA Stop: %s\n",dma_chan_name(chan));
 
 		dmaengine_terminate_all(chan);
-		
-		if(senddma_gpiobuf_phys) {
-			dma_unmap_single(chan->device->dev, senddma_gpiobuf_phys, senddma_gpiosyncbytes , DMA_TO_DEVICE);
-			senddma_gpiobuf_phys = 0;
-		}
-		if(senddma_uartbuf_phys) {
-			dma_unmap_single(chan->device->dev, senddma_uartbuf_phys, senddma_uartsyncbytes, DMA_TO_DEVICE);
-			senddma_uartbuf_phys = 0;
+		if(sg_real_len) {
+			dma_unmap_sg(chan->device->dev, sgl, sg_real_len, DMA_TO_DEVICE);
+			sg_real_len = 0;
 		}
 		dma_release_channel(chan);
 		chan = NULL;
@@ -735,27 +726,21 @@ static struct dma_async_tx_descriptor * performDMAsg(void) {
 	struct dma_slave_config slave_config;
 	int ret;
 	struct scatterlist *sg;
-	unsigned int sg_len,l_uart,sg_real_len;
+	unsigned int sg_len,l_uart;
 	unsigned int i;
+	int nents = 0;
 
 	sg_len = 2*count_send_plan;
 	sg_init_table(sgl, sg_len);
 	
 	for(i = 0, sg_real_len = 0, sg = (sgl); i<count_send_plan; i++, sg = sg_next(sg), sg_real_len++) {
-		//sg = sg_next(sg)
 		senddma_gpiobuf[i] = send_plan[i].value;
-		sg_dma_address(sg) = (senddma_gpiobuf_phys+i*sizeof(uint32_t));
-		send_plan[i].phys = sg_dma_address(sg);
-		sg_dma_len(sg) =  sizeof(uint32_t);
-		if(send_plan[i].sleep>0) {
-			l_uart = (send_plan[i].sleep*100000)/senddma_uarttime1byte;
-			if(l_uart>0) {
-				sg = sg_next(sg);
-				sg_dma_address(sg) = senddma_uartbuf_phys;
-				sg_dma_len(sg) = l_uart;
-				sg_real_len++;
-			}
-		}
+		sg_set_buf(sg, &senddma_gpiobuf[i], sizeof(uint32_t));
+		// must check for sleep 0, if use different registers
+		l_uart = (send_plan[i].sleep*100000)/senddma_uarttime1byte;
+		sg = sg_next(sg);
+		sg_set_buf(sg, senddma_uartbuf, l_uart);
+		sg_real_len++;
 	}
 	flags = DMA_CTRL_ACK | DMA_COMPL_SKIP_SRC_UNMAP | DMA_COMPL_SKIP_DEST_UNMAP;
 		slave_config.dst_addr_width = DMA_SLAVE_BUSWIDTH_4_BYTES;
@@ -772,8 +757,9 @@ static struct dma_async_tx_descriptor * performDMAsg(void) {
 		printk("dma slave config failed with err %d\n", ret);
 		return 0;
 	}
-		
-	tx = dmaengine_prep_slave_sg(chan,sgl,sg_real_len,DMA_MEM_TO_DEV,flags);
+	
+	nents = dma_map_sg(chan->device->dev, sgl, sg_real_len, DMA_TO_DEVICE);
+	tx = dmaengine_prep_slave_sg(chan,sgl,nents,DMA_MEM_TO_DEV,flags);
 	if (!tx) {
 		printk("tx init error\n");
 		return 0;
@@ -784,56 +770,27 @@ static struct dma_async_tx_descriptor * performDMAsg(void) {
 static bool hackDMAsg(struct dma_async_tx_descriptor *tx) {
 	struct sunxi_desc *txd = 0;
 	struct sunxi_dma_lli *lli;
-	int i = 0;
+	int i = 0, j = 0;
 
 	txd = to_sunxi_desc(tx);
 	lli = txd->lli_virt;
 	while(lli) {
 		// need update register gpio dst if not bank0, perform before list for update
-		if(lli->src==senddma_uartbuf_phys) {
+		if((j%2)==0) {
+			lli->dst = get_bank_reg_phys(send_plan[i++].bank);
+		} else {
 			lli->cfg = 0x290000;
 			lli->dst = UART_BASE;
-		} else {
-			lli->dst = get_bank_reg_phys(send_plan[i++].bank);
 		}
 		lli = lli->v_lln;
+		j++;
 	}
 	
 	return true;
 }
 
-static bool hackCyclicDMAsg(struct dma_async_tx_descriptor *tx,bool cyclic) {
-	struct sunxi_desc *txd = 0;
-	struct sunxi_chan *chand = 0;
-	struct sunxi_dma_lli *lli;
-
-	txd = to_sunxi_desc(tx);
-	chand = to_sunxi_chan(chan);
-	lli = txd->lli_virt;
-	if(lli) {
-		while(lli && lli->v_lln) {
-			lli = lli->v_lln;
-		}
-		if(cyclic) {
-			lli->p_lln = txd->lli_phys;
-			chand->cyclic = true;
-		} else {
-			lli->p_lln = LINK_END;
-		}
-		return true;
-	} else {
-		return false;
-	}
-}
-
-static void startSendDMA(void) {
+static void init_dma_properties(void) {
 	dma_cap_mask_t mask;
-    bool is_start = false;
-
-	if(chan) {
-		stopSendDMA(false);
-	}
-	
 	// start send dma, perform and hack dma cyclic query
 	// strcmp(dev_name(chan->device->dev),"sunxi_dmac")==0
 	dma_cap_zero(mask);
@@ -842,43 +799,58 @@ static void startSendDMA(void) {
 	if (chan) {
 		// prep_dma_sg
 		printk("DMA: %s\n",dma_chan_name(chan));
-		if(strcmp(dev_name(chan->device->dev),"sunxi_dmac")==0) {
-			is_start = false;
-			senddma_gpiobuf_phys = dma_map_single(chan->device->dev, senddma_gpiobuf, senddma_gpiosyncbytes , DMA_TO_DEVICE);
-			senddma_uartbuf_phys = dma_map_single(chan->device->dev, senddma_uartbuf, senddma_uartsyncbytes, DMA_TO_DEVICE);
-			if(senddma_gpiobuf_phys && senddma_uartbuf_phys) {
-				tx = performDMAsg();
-				if(tx) {
-					if(hackDMAsg(tx)) {
-						if(/*true */ hackCyclicDMAsg(tx,true)) {
-							#ifdef DEBUGSERVO
-							dump_sunxi_sg_list(tx,0);
-							#endif
-							tx->callback = NULL;
-							cookie = dmaengine_submit(tx);
-							
-							dma_async_issue_pending(chan);
-							is_start = true;
-						} else {
-							printk("DMA not hack cyclic sg\n");
-						}
-					} else {
-						printk("DMA not hack sg\n");
-					}
-				} else {
-					printk("DMA not perform sg\n");
-				}
-			} else {
-				printk("dma_map not perform\n");
-			}
-			if(!is_start) {
-				stopSendDMA(false);
-			}
-		} else {
+		if(strcmp(dev_name(chan->device->dev),"sunxi_dmac")!=0) {
 			printk("DMA Driver is not sunxi_dmac: %s\n",dev_name(chan->device->dev));
-			stopSendDMA(false);
+			release_dma_properties();
 		}
 	}
+}
+
+static void cb_complete_dma_send(void *data);
+
+static void restart_dma_send(void) {
+//	printk("performDMAsg, %d\n",count_send_plan);
+	tx = performDMAsg();
+//	printk("performedDMAsg, %d\n",count_send_plan);
+	if(tx) {
+		if(hackDMAsg(tx)) {
+			#ifdef DEBUGSERVO
+			if(!is_dumped_sunxi_sg_list) {
+				dump_sunxi_sg_list(tx,0);
+				is_dumped_sunxi_sg_list = true;
+			}
+			#endif
+			tx->callback = cb_complete_dma_send;
+			cookie = dmaengine_submit(tx);
+			
+//			dma_cache_sync(chan->device->dev, senddma_gpiobuf, senddma_gpiosyncbytes, DMA_TO_DEVICE);
+			
+			dma_async_issue_pending(chan);
+			if(!is_start_dma_send) {
+				is_start_dma_send = true;
+			}
+		} else {
+			printk("DMA not hack sg\n");
+		}
+	} else {
+		printk("DMA not perform sg\n");
+	}
+}
+
+static void cb_complete_dma_send(void *data) {
+/*
+	enum dma_status status;
+	status = dma_async_is_tx_complete(chan, cookie, NULL, NULL);
+	if(status!=DMA_SUCCESS) {
+		printk("DMA status: %d\n",status);
+	}
+*/	
+	if(sg_real_len) {
+		dma_unmap_sg(chan->device->dev, sgl, sg_real_len, DMA_TO_DEVICE);
+		sg_real_len = 0;
+	}
+	
+	restart_dma_send();
 }
 
 static bool check_need_reinit(void) {
@@ -1036,39 +1008,23 @@ static void update_servopin(int pin) {
 // stop dma and reinit dma buffer
 // if not different need_reupdate = true
 static bool reinit(void) {
-	// use different register list
-//	if(check_need_reinit()) {
-		// --
-		check_need_reinit();
-		stopSendDMA(true);
-		UseServoRegister_count = get_UseServoRegister();
-		printk("Init DMA use servo register: %d\n",UseServoRegister_count);
-		if(UseServoRegister_count) {
-			performGPIOBuf();
-			if(c_regs) {
-				performSendPlan();
-			}
-			startSendDMA();
-		}
-		return true;
-/*		
-	} else {
-		printk("Reinit: only reupdate\n");
+	check_need_reinit();
+	UseServoRegister_count = get_UseServoRegister();
+	printk("Init DMA use servo register: %d\n",UseServoRegister_count);
+	if(UseServoRegister_count) {
 		performGPIOBuf();
-		need_reupdate = true;
-		return false;
-	}
-*/	
-}
-
-static void reupdate_databits_servo(void) {
-	stopSendDMA(true);
-	if(get_UseServoRegister()) {
 		if(c_regs) {
+			// probably must lock mutex, probably conflict with callback
 			performSendPlan();
 		}
-		startSendDMA();
 	}
+	if(!is_start_dma_send) {
+		restart_dma_send();
+	}
+	#ifdef DEBUGSERVO
+	is_dumped_sunxi_sg_list = false;
+	#endif
+	return true;
 }
 
 static void do_pin_command(int pin,char *val) {
@@ -1189,13 +1145,10 @@ static void parse_and_update_command(struct private_data* const pdata) {
 		memcpy(pdata->wr_data, pdata->wr_data+wr_complete, pdata->wr_len-wr_complete);
 		pdata->wr_len-=wr_complete;
 	}
-	if(need_reinit) {
+	if(need_reinit || need_reupdate) {
 		if(reinit()) {
 			need_reupdate = false;
 		}
-	}
-	if(need_reupdate) {
-		reupdate_databits_servo();
 	}
 }
 
