@@ -341,6 +341,7 @@ static uint32_t size_gpiobuf = 0;
 
 static int sg_max_len = 2*(NUM_PINS+1)+3;
 static struct scatterlist sgl[2*(NUM_PINS+1)+3];
+static int sg_real_len = 0;
 
 static int pins[NUM_PINS];
 static int c_pins = 0,c_regs = 0;
@@ -610,7 +611,7 @@ static int __init opiservo_kernel_init(void) {
 	}
 	memset(senddma_gpiobuf,0,senddma_gpiosyncbytes);
 	
-	senddma_uartbuf = kmalloc(senddma_uartsyncbytes, GFP_KERNEL|GFP_NOWAIT|GFP_ATOMIC|GFP_DMA);
+	senddma_uartbuf = kmalloc(senddma_uartsyncbytes, GFP_ATOMIC|GFP_DMA);
 	if(senddma_uartbuf == 0) {
 		printk(KERN_WARNING "OPIServo: Failed to allocate uartbuf\n");
 		return -1;
@@ -721,6 +722,11 @@ static void release_dma_properties() {
 			dma_unmap_single(chan->device->dev, senddma_uartbuf_phys, senddma_uartsyncbytes, DMA_TO_DEVICE);
 			senddma_uartbuf_phys = 0;
 		}
+		if(sg_real_len) {
+			dma_unmap_sg(chan->device->dev, sgl, sg_real_len, DMA_TO_DEVICE);
+			sg_real_len = 0;
+		}
+		
 		dma_release_channel(chan);
 		chan = NULL;
 	}
@@ -733,8 +739,9 @@ static struct dma_async_tx_descriptor * performDMAsg(void) {
 	struct dma_slave_config slave_config;
 	int ret;
 	struct scatterlist *sg;
-	unsigned int sg_len,l_uart,sg_real_len;
+	unsigned int sg_len,l_uart;
 	unsigned int i;
+	int nents = 0;
 
 	sg_len = 2*count_send_plan;
 	sg_init_table(sgl, sg_len);
@@ -779,8 +786,11 @@ static struct dma_async_tx_descriptor * performDMAsg(void) {
 		printk("dma slave config failed with err %d\n", ret);
 		return 0;
 	}
-		
-	tx = dmaengine_prep_slave_sg(chan,sgl,sg_real_len,DMA_MEM_TO_DEV,flags);
+	
+	printk("dma_map_sg %d\n",sg_real_len);
+	nents = dma_map_sg(chan->device->dev, sgl, sg_real_len, DMA_TO_DEVICE);
+	printk("dma_map_sg after %d\n",nents);
+	tx = dmaengine_prep_slave_sg(chan,sgl,nents,DMA_MEM_TO_DEV,flags);
 	if (!tx) {
 		printk("tx init error\n");
 		return 0;
@@ -849,7 +859,9 @@ static void restart_dma_send(void) {
 			#endif
 			tx->callback = cb_complete_dma_send;
 			cookie = dmaengine_submit(tx);
-	
+			
+//			dma_cache_sync(chan->device->dev, senddma_gpiobuf, senddma_gpiosyncbytes, DMA_TO_DEVICE);
+			
 			dma_async_issue_pending(chan);
 			if(!is_start_dma_send) {
 				is_start_dma_send = true;
@@ -870,6 +882,11 @@ static void cb_complete_dma_send(void *data) {
 		printk("DMA status: %d\n",status);
 	}
 */	
+	if(sg_real_len) {
+		dma_unmap_sg(chan->device->dev, sgl, sg_real_len, DMA_TO_DEVICE);
+		sg_real_len = 0;
+	}
+	
 	restart_dma_send();
 }
 
