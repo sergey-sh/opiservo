@@ -334,8 +334,6 @@ static bool is_start_dma_send = false;
 
 static char *senddma_uartbuf = NULL;
 static uint32_t *senddma_gpiobuf = NULL;
-static dma_addr_t senddma_uartbuf_phys = 0;
-static dma_addr_t senddma_gpiobuf_phys = 0;
 static uint32_t index_gpiobuf = 0;
 static uint32_t size_gpiobuf = 0;
 
@@ -713,20 +711,10 @@ static void release_dma_properties() {
 		printk("DMA Stop: %s\n",dma_chan_name(chan));
 
 		dmaengine_terminate_all(chan);
-		
-		if(senddma_gpiobuf_phys) {
-			dma_unmap_single(chan->device->dev, senddma_gpiobuf_phys, senddma_gpiosyncbytes , DMA_TO_DEVICE);
-			senddma_gpiobuf_phys = 0;
-		}
-		if(senddma_uartbuf_phys) {
-			dma_unmap_single(chan->device->dev, senddma_uartbuf_phys, senddma_uartsyncbytes, DMA_TO_DEVICE);
-			senddma_uartbuf_phys = 0;
-		}
 		if(sg_real_len) {
 			dma_unmap_sg(chan->device->dev, sgl, sg_real_len, DMA_TO_DEVICE);
 			sg_real_len = 0;
 		}
-		
 		dma_release_channel(chan);
 		chan = NULL;
 	}
@@ -747,29 +735,13 @@ static struct dma_async_tx_descriptor * performDMAsg(void) {
 	sg_init_table(sgl, sg_len);
 	
 	for(i = 0, sg_real_len = 0, sg = (sgl); i<count_send_plan; i++, sg = sg_next(sg), sg_real_len++) {
-		//sg = sg_next(sg)
-		//senddma_gpiobuf[index_gpiobuf] = send_plan[i].value;
 		senddma_gpiobuf[i] = send_plan[i].value;
-		//sg_dma_address(sg) = (senddma_gpiobuf_phys+index_gpiobuf*sizeof(uint32_t));
-		sg_dma_address(sg) = (senddma_gpiobuf_phys+i*sizeof(uint32_t));
-/*		printk("V %d:"PRINTF_BINARY_PATTERN_INT32"\n",index_gpiobuf,
-			PRINTF_BYTE_TO_BINARY_INT32(senddma_gpiobuf[index_gpiobuf]));
-		index_gpiobuf++;
-		if(index_gpiobuf>=size_gpiobuf) {
-			index_gpiobuf = 0;
-		}
-*/		
-		send_plan[i].phys = sg_dma_address(sg);
-		sg_dma_len(sg) =  sizeof(uint32_t);
-		if(send_plan[i].sleep>0) {
-			l_uart = (send_plan[i].sleep*100000)/senddma_uarttime1byte;
-			if(l_uart>0) {
-				sg = sg_next(sg);
-				sg_dma_address(sg) = senddma_uartbuf_phys;
-				sg_dma_len(sg) = l_uart;
-				sg_real_len++;
-			}
-		}
+		sg_set_buf(sg, &senddma_gpiobuf[i], sizeof(uint32_t));
+		// must check for sleep 0, if use different registers
+		l_uart = (send_plan[i].sleep*100000)/senddma_uarttime1byte;
+		sg = sg_next(sg);
+		sg_set_buf(sg, senddma_uartbuf, l_uart);
+		sg_real_len++;
 	}
 	flags = DMA_CTRL_ACK | DMA_COMPL_SKIP_SRC_UNMAP | DMA_COMPL_SKIP_DEST_UNMAP;
 		slave_config.dst_addr_width = DMA_SLAVE_BUSWIDTH_4_BYTES;
@@ -787,9 +759,7 @@ static struct dma_async_tx_descriptor * performDMAsg(void) {
 		return 0;
 	}
 	
-	printk("dma_map_sg %d\n",sg_real_len);
 	nents = dma_map_sg(chan->device->dev, sgl, sg_real_len, DMA_TO_DEVICE);
-	printk("dma_map_sg after %d\n",nents);
 	tx = dmaengine_prep_slave_sg(chan,sgl,nents,DMA_MEM_TO_DEV,flags);
 	if (!tx) {
 		printk("tx init error\n");
@@ -801,19 +771,20 @@ static struct dma_async_tx_descriptor * performDMAsg(void) {
 static bool hackDMAsg(struct dma_async_tx_descriptor *tx) {
 	struct sunxi_desc *txd = 0;
 	struct sunxi_dma_lli *lli;
-	int i = 0;
+	int i = 0, j = 0;
 
 	txd = to_sunxi_desc(tx);
 	lli = txd->lli_virt;
 	while(lli) {
 		// need update register gpio dst if not bank0, perform before list for update
-		if(lli->src==senddma_uartbuf_phys) {
+		if((j%2)==0) {
+			lli->dst = get_bank_reg_phys(send_plan[i++].bank);
+		} else {
 			lli->cfg = 0x290000;
 			lli->dst = UART_BASE;
-		} else {
-			lli->dst = get_bank_reg_phys(send_plan[i++].bank);
 		}
 		lli = lli->v_lln;
+		j++;
 	}
 	
 	return true;
@@ -829,14 +800,7 @@ static void init_dma_properties(void) {
 	if (chan) {
 		// prep_dma_sg
 		printk("DMA: %s\n",dma_chan_name(chan));
-		if(strcmp(dev_name(chan->device->dev),"sunxi_dmac")==0) {
-			senddma_gpiobuf_phys = dma_map_single(chan->device->dev, senddma_gpiobuf, senddma_gpiosyncbytes , DMA_TO_DEVICE);
-			senddma_uartbuf_phys = dma_map_single(chan->device->dev, senddma_uartbuf, senddma_uartsyncbytes, DMA_TO_DEVICE);
-			if(!senddma_gpiobuf_phys || !senddma_uartbuf_phys) {
-				printk("dma_map not perform\n");
-				release_dma_properties();
-			}
-		} else {
+		if(strcmp(dev_name(chan->device->dev),"sunxi_dmac")!=0) {
 			printk("DMA Driver is not sunxi_dmac: %s\n",dev_name(chan->device->dev));
 			release_dma_properties();
 		}
