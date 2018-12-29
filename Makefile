@@ -17,6 +17,11 @@ install: opiservo.ko
 	@sudo chmod +x /lib/udev/opiservo
 	@echo "OPIServo udev rules complete."
 
+reload: opiservo.ko
+	@sudo rmmod opiservo
+	@sudo insmod opiservo.ko
+	@echo "OPIServo reload."
+
 install_autostart: install
 	@echo "Enabling OPIServo autostart on boot."
 	@sudo mkdir -p $(INSTALL_PATH)
